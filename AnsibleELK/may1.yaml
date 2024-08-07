@@ -1,0 +1,363 @@
+- name: Set up and install ELK
+  hosts: may1
+  become: yes
+
+  tasks:
+  #Install ELK
+    - name: Install apt-transport-https
+      apt:
+        name: apt-transport-https
+        state: present
+
+    - name: Ensure Elasticsearch GPG key is downloaded
+      get_url:
+        url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+        dest: /tmp/GPG-KEY-elasticsearch
+        mode: '0777'
+
+    - name: Install Elasticsearch GPG key if not already installed
+      ansible.builtin.command:
+        cmd: gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg /tmp/GPG-KEY-elasticsearch
+      args:
+        creates: /usr/share/keyrings/elasticsearch-keyring.gpg
+
+    - name: Add Elasticsearch APT repository
+      shell: |
+        echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-8.x.list
+
+    - name: Update APT package index
+      apt:
+        update_cache: yes
+
+    - name: Install Elasticsearch
+      apt:
+        name: elasticsearch
+        state: present
+
+    - name: Set permissions for /etc/elasticsearch
+      file:
+        path: /etc/elasticsearch
+        mode: '0777'
+        state: directory
+
+    - name: Set permissions for /etc/elasticsearch/certs
+      file:
+        path: /etc/elasticsearch/certs
+        mode: '0777'
+        state: directory
+
+    - name: Install Logstash
+      apt:
+        name: logstash
+        state: present
+
+    - name: Set permissions for /etc/logstash
+      file:
+        path: /etc/logstash
+        mode: '0777'
+        state: directory
+
+    - name: Install Kibana
+      apt:
+        name: kibana
+        state: present
+    
+    - name: Set permissions for /etc/kibana
+      file:
+        path: /etc/kibana
+        mode: '0777'
+        state: directory
+
+    #Configuration settings for Elasticsearch
+    - name: Set network host
+      ansible.builtin.lineinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        regexp: '^(\s*#network.host:\s*)192.168.0.1'
+        line: 'network.host: 0.0.0.0'
+        create: yes
+      notify:
+        - Restart Elasticsearch
+
+    - name: Set http port
+      ansible.builtin.lineinfile:
+        path: /etc/elasticsearch/elasticsearch.yml
+        regexp: '^(\s*#http.port:\s*)9200'
+        line: 'http.port: 9200'
+        create: yes
+      notify:
+        - Restart Elasticsearch
+    
+    #Start and enable Elasticsearch
+    - name: Ensure Elasticsearch service is started and enabled
+      service:
+        name: elasticsearch
+        state: started
+        enabled: yes
+
+    #Create Token and join for Kibana
+    - name: Check if enrollment token exists
+      stat:
+        path: /etc/kibana/enrollment_token_file
+      register: token_file
+
+    - name: Elasticsearch Create Enrollment Token for Kibana
+      shell: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s kibana
+      register: token_response
+      when: not token_file.stat.exists
+
+    - name: Extract Token from Response
+      set_fact:
+        enrollment_token: "{{ token_response.stdout }}"
+      when: not token_file.stat.exists
+
+    - name: Save the Enrollment Token to a file
+      copy:
+        content: "{{ enrollment_token }}"
+        dest: /etc/kibana/enrollment_token_file
+      when: not token_file.stat.exists
+
+    - name: Run Kibana Enrollment Token Command
+      shell: /usr/share/kibana/bin/kibana-setup --enrollment-token {{ enrollment_token }}
+      args:
+        stdin: "y\n"
+      when: not token_file.stat.exists
+
+    #Setup password for elasticsearch
+    - name: Reset password for user elastic
+      shell: /usr/share/elasticsearch/bin/elasticsearch-reset-password -i -u elastic
+      args: 
+        stdin: "y\nkhongco129\nkhongco129\n"
+
+    #Create SSL, Certificate Elasticsearch and Kibana
+    - name: Show password
+      shell: /usr/share/elasticsearch/bin/elasticsearch-keystore show xpack.security.http.ssl.keystore.secure_password
+      register: passwordCA
+
+    - name: Extract Password
+      set_fact:
+        password_ca: "{{ passwordCA.stdout.strip() }}"
+
+    - name: Display password
+      debug:
+        msg: "PasswordCA: {{ passwordCA.stdout.strip() }}"
+
+    - name: Check if certificate file already exists
+      stat:
+        path: /etc/elasticsearch/certs/ca.crt.pem
+      register: cert_check
+
+    - name: Extract the certificate from the PKCS#12 file
+      shell: sudo openssl pkcs12 -in /etc/elasticsearch/certs/http.p12 -out /etc/elasticsearch/certs/ca.crt.pem -clcerts -nokeys -passin stdin
+      args:
+        stdin: "{{ password_ca }}"
+      when: not cert_check.stat.exists
+
+    - name: Extract the private key from the PKCS#12 file
+      shell: sudo openssl pkcs12 -in /etc/elasticsearch/certs/http.p12 -out /etc/elasticsearch/certs/ca.key.pem -nocerts -nodes -passin stdin
+      args:
+        stdin: "{{ password_ca }}"
+      when: not cert_check.stat.exists
+
+    - name: Set permissions for the extracted certificate and key
+      file:
+        path: "/etc/elasticsearch/certs/{{ item }}"
+        mode: '0777'
+      loop:
+        - ca.crt.pem
+        - ca.key.pem
+      when: not cert_check.stat.exists
+
+    #Copy Certificate from Elasticsearch to Logstash
+    - name: Check if certificate in Logstash exists
+      stat:
+        path: /etc/logstash/ca.key.pem
+      register: certlogstash_check
+
+    - name: Copy cert files to Logstash directory
+      shell: sudo cp /etc/elasticsearch/certs/ca.* /etc/logstash
+      when: not certlogstash_check.stat.exists
+
+    #Create SSL, Certificate Logstash
+    - name: Check if certificate in Logstash exists
+      stat:
+        path: /etc/logstash/CA1.cert.pem
+      register: cert_logstash
+
+    - name: Create cert for Logstash
+      shell: sudo openssl req -new -x509 -key /etc/logstash/ca.key.pem -passin pass:khongco129 -subj "/C=US/ST=California/L=San Francisco/O=MyOrg/OU=MyDept/CN=192.168.196.170" -days 365 -out /etc/logstash/CA1.cert.pem
+      when: not cert_logstash.stat.exists
+
+    #Copy Certificate from Elasticsearch to Kibana
+    - name: Check if certificate in Kibana exists
+      stat:
+        path: /etc/kibana/ca.crt.pem
+      register: certkibana_check
+
+    - name: Copy cert files to Kibana directory
+      shell: sudo cp /etc/elasticsearch/certs/ca.* /etc/kibana
+      when: not certkibana_check.stat.exists
+
+    #Configuration host and port settings for Kibana
+    - name: Set server port
+      ansible.builtin.lineinfile:
+        path: /etc/kibana/kibana.yml
+        regexp: '^(\s*#server.port:\s*)5601'
+        line: 'server.port: 5601'
+        backrefs: yes
+      notify:
+        - Restart Kibana
+
+    - name: Set server host
+      ansible.builtin.lineinfile:
+        path: /etc/kibana/kibana.yml
+        regexp: '^(\s*#server.host:\s*)"localhost"'
+        line: 'server.host: "0.0.0.0"'
+        backrefs: yes
+      notify:
+        - Restart Kibana
+
+    #Start and enable Kibana
+    - name: Ensure Kibana service is started and enabled
+      service:
+        name: kibana
+        state: started
+        enabled: yes
+
+    #Configuration SSL settings for Kibana
+    - name: SSL enabled Kibana in Kibana configuration
+      ansible.builtin.lineinfile:
+        path: /etc/kibana/kibana.yml  
+        regexp: '^(\s*#server.ssl.enabled:\s*)false'  
+        line: 'server.ssl.enabled: true' 
+        backrefs: yes
+      notify:
+        - Restart Kibana
+
+    - name: SSL certificates Kibana in Kibana configuration
+      ansible.builtin.lineinfile:
+        path: /etc/kibana/kibana.yml  
+        regexp: '^(\s*#server.ssl.certificate:\s*)/path/to/your/server.crt'  
+        line: 'server.ssl.certificate: /etc/kibana/ca.crt.pem' 
+        backrefs: yes
+      notify:
+        - Restart Kibana
+
+    - name: SSL key Kibana in Kibana configuration
+      ansible.builtin.lineinfile:
+        path: /etc/kibana/kibana.yml  
+        regexp: '^(\s*#server.ssl.key:\s*)/path/to/your/server.key'  
+        line: 'server.ssl.key: /etc/kibana/ca.key.pem'  
+        backrefs: yes
+      notify:
+        - Restart Kibana
+        
+    #Ensure Logstash is started and enabled    
+    - name: Ensure Logstash service is started and enabled
+      service:
+        name: logstash
+        state: started
+        enabled: yes
+
+    - name: Copy Logstash configuration file
+      copy:
+        src: /home/ansiblehost/kienne/logstash.conf
+        dest: /etc/logstash/conf.d/logstash.conf
+        owner: logstash
+        group: logstash
+        mode: '0644'
+      notify:
+        - Restart Logstash
+
+    #SSH may1 va may2
+    - name: Check if SSH key exists
+      stat:
+        path: ~/.ssh/id_rsa.pub
+      register: ssh_key
+
+    - name: Generate SSH key pair
+      command: ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
+      when: not ssh_key.stat.exists
+
+    - name: Fetch SSH public key
+      slurp:
+        src: ~/.ssh/id_rsa.pub
+      register: ssh_pub_key
+
+    - name: Copy SSH public key to destination machine
+      delegate_to: 192.168.196.171
+      become: true
+      ansible.builtin.lineinfile:
+        path: ~/.ssh/authorized_keys
+        line: "{{ ssh_pub_key['content'] | b64decode }}"
+        create: yes
+        state: present
+
+    #Restarting
+    - name: Ensure Elasticsearch service is started and enabled
+      service:
+        name: elasticsearch
+        state: restarted
+        enabled: yes
+
+    - name: Ensure Logstash service is started and enabled
+      service:
+        name: logstash
+        state: restarted
+        enabled: yes
+
+    - name: Ensure Kibana service is started and enabled
+      service:
+        name: kibana
+        state: restarted
+        enabled: yes   
+
+    #Check ELK status
+      #Elasticsearch
+    - name: Check Elasticsearch status
+      service:
+        name: elasticsearch
+        state: started
+      register: result_e
+
+    - name: Print Elasticsearch status
+      debug:
+        msg: "Elasticsearch service is {{ result_e.state }}"
+
+      #Logstash
+    - name: Check Logstash status
+      service:
+        name: logstash
+        state: started
+      register: result_l
+
+    - name: Print Logstash status
+      debug:
+        msg: "Logstash service is {{ result_l.state }}"
+
+      #Kibana
+    - name: Check Kibana status
+      service:
+        name: kibana
+        state: started
+      register: result_k
+
+    - name: Print Kibana status
+      debug:
+        msg: "Kibana service is {{ result_k.state }}"
+
+#----------------------------------------------------------------
+  handlers:
+    - name: Restart Elasticsearch
+      service:
+        name: elasticsearch
+        state: restarted
+    
+    - name: Restart Logstash
+      service:
+        name: logstash
+        state: restarted
+
+    - name: Restart Kibana
+      service:
+        name: kibana
+        state: restarted

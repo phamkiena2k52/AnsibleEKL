@@ -1,0 +1,117 @@
+- name: Set up and install Filebeat
+  hosts: may2
+  become: yes
+
+  tasks:
+  #Install Filebeat
+    - name: Install apt-transport-https
+      apt:
+        name: apt-transport-https
+        state: present
+
+    - name: Ensure Elasticsearch GPG key is downloaded
+      get_url:
+        url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+        dest: /tmp/GPG-KEY-elasticsearch
+        mode: '0777'
+
+    - name: Install Elasticsearch GPG key if not already installed
+      ansible.builtin.command:
+        cmd: gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg /tmp/GPG-KEY-elasticsearch
+      args:
+        creates: /usr/share/keyrings/elasticsearch-keyring.gpg
+
+    - name: Add Elasticsearch APT repository
+      shell: |
+        echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-8.x.list
+
+    - name: Update APT package index
+      apt:
+        update_cache: yes
+
+    - name: Install filebeat
+      apt:
+        name: filebeat
+        state: present
+
+    - name: Set permissions for /etc/filebeat
+      file:
+        path: /etc/filebeat
+        mode: '0777'
+        state: directory
+
+    - name: Enable filebeat.input
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*enabled:\s*)false'  
+        line: '  enabled: true' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Enable output.logstash
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*#output.logstash:\s*)'  
+        line: 'output.logstash:' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Enable host
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*#hosts:\s*)\["localhost:5044"]'  
+        line: '  hosts: [192.168.196.170:5044]' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Enable ssl.certificate_author
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*#ssl.certificate_authorities:\s*)\["/etc/pki/root/ca.pem"]'  
+        line: '  ssl.certificate_authorities: ["/etc/filebeat/CA1.cert.pem"]' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Enable ssl.certificate
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*#ssl.certificate:\s*)"/etc/pki/client/cert.pem"'  
+        line: '  ssl.certificate: ["/etc/filebeat/CA1.cert.pem"]' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Enable ssl.key
+      ansible.builtin.lineinfile:
+        path: /etc/filebeat/filebeat.yml  
+        regexp: '^(\s*#ssl.key:\s*)"/etc/pki/client/cert.key"'  
+        line: '  ssl.key: ["/etc/filebeat/ca.key.pem"]' 
+        backrefs: yes
+      notify:
+        - Restart Filebeat
+
+    - name: Ensure Filebeat service is started and enabled
+      service:
+        name: filebeat
+        state: started
+        enabled: yes
+
+    - name: Check Filebeat status
+      service:
+        name: filebeat
+        state: started
+      register: result_fb
+
+    - name: Print Filebeat status
+      debug:
+        msg: "Filebeat service is {{ result_fb.state }}"
+
+  handlers:
+    - name: Restart Filebeat
+      service:
+        name: filebeat
+        state: restarted

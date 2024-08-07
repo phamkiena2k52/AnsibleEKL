@@ -1,0 +1,43 @@
+---
+- name: Copy file from may1 to may2
+  hosts: may1
+  gather_facts: no
+  tasks:
+    - name: ca.crt.pem from may1
+      fetch:
+        src: /etc/logstash/ca.crt.pem
+        dest: /tmp/
+        flat: yes
+
+    - name: CA1.cert.pem from may1
+      fetch:
+        src: /etc/logstash/CA1.cert.pem
+        dest: /tmp/
+        flat: yes
+
+    - name: ca.key.pem from may1
+      fetch:
+        src: /etc/logstash/ca.key.pem
+        dest: /tmp/
+        flat: yes
+
+
+- name: Copy the fetched file to may2
+  hosts: may2
+  gather_facts: no
+  tasks:
+    - name: Copy file ca.crt.pem to may2
+      copy:
+        src: /tmp/ca.crt.pem
+        dest: /etc/filebeat
+
+    - name: Copy file CA1.cert.crt.pem to may2
+      copy:
+        src: /tmp/CA1.cert.pem
+        dest: /etc/filebeat
+
+    - name: Copy file ca.key.pem to may2
+      copy:
+        src: /tmp/ca.key.pem
+        dest: /etc/filebeat
+
