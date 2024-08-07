@@ -1,0 +1,12 @@
+---
+- name: Include may1 tasks
+  hosts: may1
+  include_tasks: may1.yml
+
+- name: Include may2 tasks
+  hosts: may2
+  include_tasks: may2.yml
+
+- name: Include scpfile tasks
+  hosts: all
+  include_tasks: scpfile.yml
