@@ -1,0 +1,4 @@
+[may1]
+192.168.196.170 ansible_ssh_user=may1 ansible_ssh_private_key_file=/home/ansiblehost/.ssh/may1
+[may2]
+192.168.196.171 ansible_ssh_user=may2 ansible_ssh_private_key_file=/home/ansiblehost/.ssh/may1
